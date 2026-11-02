@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="ja">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>QR受付</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+      background: #111;
+      color: #fff;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    #login {
+      max-width: 420px;
+      margin: 0 auto;
+      padding: 32px 16px;
+    }
+
+    h1 {
+      font-size: 24px;
+      margin: 0 0 24px;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    input {
+      width: 100%;
+      font-size: 24px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #666;
+      background: #222;
+      color: #fff;
+      margin-bottom: 24px;
+    }
+
+    button {
+      font: inherit;
+      font-weight: 700;
+      color: #fff;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .mode {
+      display: block;
+      width: 100%;
+      padding: 22px;
+      font-size: 22px;
+      margin-bottom: 14px;
+    }
+
+    .mode-H,
+    body[data-mode="H"] #bar {
+      background: #1558b0;
+    }
+
+    .mode-K,
+    body[data-mode="K"] #bar {
+      background: #8a2f9e;
+    }
+
+    #loginMsg {
+      color: #ff9c9c;
+      min-height: 1.5em;
+    }
+
+    #scan {
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+    }
+
+    #bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      font-weight: 700;
+      font-size: 18px;
+    }
+
+    #count {
+      font-variant-numeric: tabular-nums;
+    }
+
+    #back {
+      background: rgba(0, 0, 0, .35);
+      padding: 8px 12px;
+      font-size: 14px;
+    }
+
+    #cam {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      background: #000;
+      overflow: hidden;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    #frame {
+      position: absolute;
+      inset: 0;
+      margin: auto;
+      width: 62vmin;
+      height: 62vmin;
+      border: 3px solid rgba(255, 255, 255, .85);
+      border-radius: 12px;
+    }
+
+    #result {
+      padding: 16px;
+      min-height: 150px;
+      background: #2a2a2a;
+      text-align: center;
+    }
+
+    #result.ok {
+      background: #0b7a3b;
+    }
+
+    #result.warn {
+      background: #b76e00;
+    }
+
+    #result.ng {
+      background: #b3261e;
+    }
+
+    #title {
+      font-size: 26px;
+      font-weight: 800;
+    }
+
+    #who {
+      font-size: 28px;
+      font-weight: 800;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    #detail {
+      font-size: 15px;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+
+<body>
+  <section id="login">
+    <h1>QR受付</h1>
+    <label for="pin">スタッフ用PIN</label>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off">
+    <button class="mode mode-H" data-mode="H">本会の受付を開始</button>
+    <button class="mode mode-K" data-mode="K">懇親会の受付を開始</button>
+    <p id="loginMsg" role="alert"></p>
+  </section>
+
+  <section id="scan" hidden>
+    <div id="bar">
+      <span id="modeName"></span>
+      <span id="count"></span>
+      <button id="back" type="button">切替</button>
+    </div>
+    <div id="cam">
+      <video id="video" playsinline muted autoplay></video>
+      <div id="frame"></div>
+    </div>
+    <div id="result" aria-live="polite">
+      <div id="title">QRを枠に合わせてください</div>
+      <div id="who"></div>
+      <div id="detail"></div>
+    </div>
+  </section>
+
+  <script src="jsQR.js"></script>
+  <script>
+    // Apps Script をデプロイして得た「ウェブアプリのURL」を設定する
+    const API_URL = 'https://script.google.com/macros/s/AKfycbw32rMaImUyL1fp3PDoDERdt4oN9tpF56CNJPY1JcJozeViV6P2NWT8SKPACziBHtY1hQ/exec';
+
+    const MODE_NAMES = { H: '本会受付', K: '懇親会受付' };
+    const SAME_CODE_IGNORE_MS = 4000;
+    const SCAN_INTERVAL_MS = 120;
+    const REQUEST_TIMEOUT_MS = 25000;
+    const $ = (id) => document.getElementById(id);
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let pin = '', mode = '', stream = null, running = false, busy = false;
+    let lastCode = '', lastCodeAt = 0, audio = null, wakeLock = null;
+
+    try { $('pin').value = localStorage.getItem('qr_pin') || ''; } catch (e) { }
+
+    document.querySelectorAll('.mode').forEach((b) => b.addEventListener('click', () => start(b.dataset.mode)));
+    $('back').addEventListener('click', stop);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && running) requestWakeLock();
+    });
+
+    async function callApi(body) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        // text/plain にすることで CORS プリフライトを避ける (Apps Script は OPTIONS を受けられない)
+        const res = await fetch(API_URL, {
+          method: 'POST', redirect: 'follow', signal: controller.signal,
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ pin, mode, ...body })
+        });
+        return await res.json();
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function start(selected) {
+      pin = $('pin').value.trim();
+      mode = selected;
+      $('loginMsg').textContent = '確認中…';
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      audio.resume();
+      try {
+        const res = await callApi({ action: 'ping' });
+        if (res.status !== 'ok') { $('loginMsg').textContent = res.message || '接続できませんでした'; return; }
+        showCount(res.counts);
+      } catch (e) {
+        $('loginMsg').textContent = '接続できませんでした。通信状況を確認してください';
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+      } catch (e) {
+        $('loginMsg').textContent = 'カメラを使用できません。ブラウザの設定でカメラを許可してください';
+        return;
+      }
+      try { localStorage.setItem('qr_pin', pin); } catch (e) { }
+      $('loginMsg').textContent = '';
+      document.body.dataset.mode = mode;
+      $('modeName').textContent = MODE_NAMES[mode];
+      $('login').hidden = true;
+      $('scan').hidden = false;
+      show('', 'QRを枠に合わせてください', '', '');
+      $('video').srcObject = stream;
+      await $('video').play();
+      running = true;
+      requestWakeLock();
+      scanLoop();
+    }
+
+    function stop() {
+      running = false;
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+      if (wakeLock) wakeLock.release().catch(() => { });
+      wakeLock = null;
+      $('scan').hidden = true;
+      $('login').hidden = false;
+    }
+
+    async function requestWakeLock() {
+      try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { /* 非対応端末では無視 */ }
+    }
+
+    function scanLoop() {
+      if (!running) return;
+      const video = $('video');
+      if (!busy && video.readyState >= video.HAVE_ENOUGH_DATA) {
+        const width = Math.min(800, video.videoWidth);
+        const height = Math.round(video.videoHeight * (width / video.videoWidth));
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(video, 0, 0, width, height);
+        const found = jsQR(ctx.getImageData(0, 0, width, height).data, width, height, { inversionAttempts: 'dontInvert' });
+        if (found && found.data) onCode(found.data);
+      }
+      setTimeout(scanLoop, SCAN_INTERVAL_MS);
+    }
+
+    async function onCode(code) {
+      const now = Date.now();
+      if (code === lastCode && now - lastCodeAt < SAME_CODE_IGNORE_MS) return;
+      lastCode = code;
+      lastCodeAt = now;
+      busy = true;
+      show('', '確認中…', '', '');
+      try {
+        const res = await callApi({ action: 'checkin', code });
+        render(res);
+      } catch (e) {
+        show('ng', '通信エラー', '', 'もう一度読み取ってください');
+        feedback(false);
+        lastCode = ''; // すぐ再読取できるようにする
+      } finally {
+        lastCodeAt = Date.now(); // 応答後の画面確認中に同じQRを再送しない
+        busy = false;
+      }
+    }
+
+    function render(res) {
+      if (res.counts) showCount(res.counts);
+      const who = res.name ? `${res.name} 様` : '';
+      if (res.status === 'checked') {
+        show('ok', '✓ 受付しました', who, [res.area, res.at].filter(Boolean).join(' / '));
+        feedback(true);
+      } else if (res.status === 'duplicate') {
+        show('warn', '受付済みです', who, res.at ? `${res.at} に受付済み` : '');
+        feedback(false);
+      } else {
+        show('ng', res.message || 'エラー', who, res.status === 'busy' ? '' : '受付できませんでした');
+        feedback(false);
+        if (res.status === 'busy') lastCode = '';
+      }
+    }
+
+    function show(kind, title, who, detail) {
+      $('result').className = kind;
+      $('title').textContent = title;
+      $('who').textContent = who;
+      $('detail').textContent = detail;
+    }
+
+    function showCount(c) {
+      if (c) $('count').textContent = `${c.checked} / ${c.total}`;
+    }
+
+    function feedback(ok) {
+      if (navigator.vibrate) navigator.vibrate(ok ? 80 : [120, 80, 120]);
+      if (!audio) return;
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.frequency.value = ok ? 1200 : 300;
+      gain.gain.value = 0.15;
+      osc.connect(gain).connect(audio.destination);
+      osc.start();
+      osc.stop(audio.currentTime + (ok ? 0.12 : 0.35));
+    }
+  </script>
+</body>
+
+</html>
