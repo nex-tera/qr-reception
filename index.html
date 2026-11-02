@@ -331,7 +331,7 @@
       if (res.counts) showCount(res.counts);
       const who = res.name ? `${res.name} 様` : '';
       if (res.status === 'checked') {
-        show('ok', '✓ 受付しました', who, [res.area, res.at].filter(Boolean).join(' / '));
+        show('ok', '✓ 受付しました', who, [res.category, res.area, res.at].filter(Boolean).join(' / '));
         feedback(true);
       } else if (res.status === 'duplicate') {
         show('warn', '受付済みです', who, res.at ? `${res.at} に受付済み` : '');
